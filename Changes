@@ -1,4 +1,5 @@
 Revision history for perl distribution Mojo-GoogleAnalytics
 
-0.01 Not Released
- - Started project
+0.01 2017-07-24T13:39:40+0200
+ - Created Mojo::GoogleAnalytics
+ - Created Mojo::GoogleAnalytics::Report
