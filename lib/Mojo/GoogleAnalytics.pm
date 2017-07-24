@@ -149,7 +149,131 @@ sub _process_batch_get_response {
     Mojo::GoogleAnalytics::Report->new($_);
   } @$reports;
 
+  if ($err) {
+    $err = sprintf '%s >>> %s (%s)', $url, $err->{message} || 'Unknown error', $err->{code} || 0;
+  }
+
   return $err || '', $as_list ? Mojo::Collection->new(@$reports) : $reports->[0];
 }
 
 1;
+
+=encoding utf8
+
+=head1 NAME
+
+Mojo::GoogleAnalytics - Extract data from Google Analytics using Mojo UserAgent
+
+=head1 SYNOPSIS
+
+  my $ga     = Mojo::GoogleAnalytics->new("/path/to/credentials.json");
+  my $report = $ga->batch_get({
+    viewId     => "ga:152749100",
+    dateRanges => [{startDate => "7daysAgo", endDate => "1daysAgo"}],
+    dimensions => [{name => "ga:country"}, {name => "ga:browser"}],
+    metrics    => [{expression => "ga:pageviews"}, {expression => "ga:sessions"}],
+    orderBys   => [{fieldName => "ga:pageviews", sortOrder => "DESCENDING"}],
+    pageSize   => 10,
+  });
+
+  print $report->rows_to_table(as => "text");
+
+=head1 DESCRIPTION
+
+L<Mojo::GoogleAnalytics> is a Google Analytics client which allow you to
+extract data non-blocking.
+
+=head1 ATTRIBUTES
+
+=head2 authorization
+
+  $hash_ref = $self->authorization;
+
+Holds authorization data, extracted by L</authorize>. This can be useful to set
+from a cache if L<Mojo::GoogleAnalytics> objects are created and destroyed
+frequently, but with the same credentials.
+
+=head2 client_email
+
+  $str = $self->client_email;
+
+Example: "some-app@some-project.iam.gserviceaccount.com".
+
+=head2 client_id
+
+  $str = $self->client_id;
+
+Example: "103742165385019792511".
+
+=head2 private_key
+
+  $str = $self->private_key;
+
+Holds the content of a pem file that looks like this:
+
+  -----BEGIN PRIVATE KEY-----
+  ...
+  ...
+  -----END PRIVATE KEY-----
+
+=head2 ua
+
+  $ua = $self->ua;
+  $self = $self->ua(Mojo::UserAgent->new);
+
+Holds a L<Mojo::UserAgent> object.
+
+=head1 METHODS
+
+=head2 authorize
+
+  $self = $self->authorize;
+  $self = $self->authorize(sub { my ($self, $err) = @_; });
+
+This method will set L</authorization>. Note that this method is automatically
+called from inside of L</batch_get>, unless already authorized.
+
+=head2 batch_get
+
+  $report = $self->batch_get($query);
+  $self = $self->batch_get($query, sub { my ($self, $err, $report) = @_ });
+
+Used to extract data from Google Analytics. C<$report> will be a
+L<Mojo::Collection> if C<$query> is an array ref, and a single
+L<Mojo::GoogleAnalytics::Report> object if C<$query> is a hash.
+
+C<$err> is a string on error and false value on success.
+
+=head2 from_file
+
+  $self = $self->from_file("/path/to/credentials.json");
+
+Used to load attributes from a JSON credentials file, generated from
+L<https://console.developers.google.com/apis/credentials>. Example file:
+
+  {
+    "type": "service_account",
+    "project_id": "cool-project-238176",
+    "private_key_id": "01234abc6780dc2a3284851423099daaad8cff92",
+    "private_key": "-----BEGIN PRIVATE KEY-----...\n-----END PRIVATE KEY-----\n",
+    "client_email": "some-name@cool-project-238176.iam.gserviceaccount.com",
+    "client_id": "103742165385019792511",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://accounts.google.com/o/oauth2/token",
+  }
+
+Note: The JSON credentials file will probably contain more fields than is
+listed above.
+
+=head2 new
+
+=head1 AUTHOR
+
+Jan Henning Thorsen
+
+=head1 COPYRIGHT AND LICENSE
+
+This program is free software, you can redistribute it and/or modify it under
+the terms of the Artistic License version 2.0.
+
+=cut
