@@ -1,7 +1,9 @@
 package Mojo::GoogleAnalytics;
 use Mojo::Base -base;
 
+use Mojo::Collection;
 use Mojo::File 'path';
+use Mojo::GoogleAnalytics::Report;
 use Mojo::JSON qw(decode_json);
 use Mojo::JWT;
 use Mojo::UserAgent;
@@ -76,15 +78,15 @@ sub batch_get {
         $ua_args[1] = {Authorization => $self->authorization->{header}};
         $self->ua->post(@ua_args, $delay->begin);
       },
-      sub { $self->$cb($self->_process_batch_get_response(pop)) }
+      sub { $self->$cb($self->_process_batch_get_response($query, pop)) }
     );
     return $self;
   }
   else {
     $ua_args[1] = {Authorization => $self->authorize->authorization->{header}};
     warn "[RG::Google] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
-    my ($err, $res) = $self->_process_batch_get_response($self->ua->post(@ua_args));
-    die $err if $err;
+    my ($err, $res) = $self->_process_batch_get_response($query, $self->ua->post(@ua_args));
+    die $err->{message} if $err;
     return $res;
   }
 }
@@ -134,17 +136,20 @@ sub _process_authorize_response {
 }
 
 sub _process_batch_get_response {
-  my ($self, $tx) = @_;
-  my $url = $tx->req->url;
-  my $res = $tx->res->json || {};
-  my $err = $res->{error} || $tx->error;
+  my ($self, $query, $tx) = @_;
+  my $as_list = ref $query eq 'ARRAY';
+  my $url     = $tx->req->url;
+  my $res     = $tx->res->json || {};
+  my $err     = $res->{error} || $tx->error;
+  my $reports = $res->{reports} || ($as_list ? $query : [{}]);
 
-  if ($err) {
-    $err = sprintf '%s >>> %s (%s)', $url, $err->{message} || 'Unknown error', $err->{code} || 0;
-  }
+  @$reports = map {
+    $_->{error} = $err;
+    $_->{query} = $as_list ? shift @$query : $query, $_->{tx} = $tx;
+    Mojo::GoogleAnalytics::Report->new($_);
+  } @$reports;
 
-  warn "[RG::Google] $err\n", if DEBUG and $err;
-  return $err || '', $res;
+  return $err || '', $as_list ? Mojo::Collection->new(@$reports) : $reports->[0];
 }
 
 1;
