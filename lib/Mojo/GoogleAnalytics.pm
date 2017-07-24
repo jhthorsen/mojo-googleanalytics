@@ -183,6 +183,9 @@ Mojo::GoogleAnalytics - Extract data from Google Analytics using Mojo UserAgent
 L<Mojo::GoogleAnalytics> is a Google Analytics client which allow you to
 extract data non-blocking.
 
+This module is work in progress and currently EXPERIMENTAL. Let me know if you
+start using it or has any feedback regarding the API.
+
 =head1 ATTRIBUTES
 
 =head2 authorization
