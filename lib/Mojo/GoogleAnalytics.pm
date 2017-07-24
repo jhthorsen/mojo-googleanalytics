@@ -267,6 +267,13 @@ listed above.
 
 =head2 new
 
+  $self = Mojo::GoogleAnalytics->new(%attrs);
+  $self = Mojo::GoogleAnalytics->new(\%attrs);
+  $self = Mojo::GoogleAnalytics->new("/path/to/credentials.json");
+
+Used to construct a new L<Mojo::GoogleAnalytics> object. Calling C<new()> with
+a single argument will cause L</from_file> to be called with that argument.
+
 =head1 AUTHOR
 
 Jan Henning Thorsen
