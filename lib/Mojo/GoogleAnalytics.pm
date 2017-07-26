@@ -86,7 +86,7 @@ sub batch_get {
     $ua_args[1] = {Authorization => $self->authorize->authorization->{header}};
     warn "[RG::Google] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
     my ($err, $res) = $self->_process_batch_get_response($query, $self->ua->post(@ua_args));
-    die $err->{message} if $err;
+    die $err if $err;
     return $res;
   }
 }
