@@ -4,19 +4,33 @@ use Mojo::Base -base;
 use Mojo::Collection;
 use Mojo::File 'path';
 use Mojo::GoogleAnalytics::Report;
-use Mojo::JSON qw(decode_json);
+use Mojo::JSON qw(decode_json false true);
 use Mojo::JWT;
 use Mojo::UserAgent;
 
+use constant DEBUG => $ENV{MOJO_GA_DEBUG} || 0;
+
 our $VERSION = '0.01';
 
-use constant DEBUG => $ENV{MOJO_GA_DEBUG} || 0;
+our %QUERY_SORT_ORDER = (asc => 'ASCENDING', desc => 'DESCENDING', x => 'SORT_ORDER_UNSPECIFIED');
+
+our %QUERY_TRANSLATOR = (
+  'eq'     => [qw(dimension EXACT)],
+  '^'      => [qw(dimension BEGINS_WITH)],
+  '$'      => [qw(dimension ENDS_WITH)],
+  '=~'     => [qw(dimension REGEXP)],
+  'substr' => [qw(dimension PARTIAL)],
+  '=='     => [qw(metric EQUAL)],
+  '>'      => [qw(metric GREATER_THAN)],
+  '<'      => [qw(metric LESS_THAN)],
+);
 
 has authorization => sub { +{} };
 has client_email  => sub { Carp::confess('client_email is required') };
 has client_id     => sub { Carp::confess('client_id is required') };
 has private_key   => sub { Carp::confess('private_key is required') };
 has ua            => sub { Mojo::UserAgent->new(max_redirects => 3) };
+has view_id => '';
 
 sub authorize {
   my ($self, $cb) = @_;
@@ -103,9 +117,16 @@ sub from_file {
   return $self;
 }
 
+sub get_report {
+  my ($self, $query, $cb) = @_;
+  return $self->batch_get($self->_query_translator(%$query), $cb);
+}
+
 sub new {
   my $class = shift;
-  _defaults(@_ == 1 ? $class->SUPER::new->from_file(shift) : $class->SUPER::new(@_));
+  my $file = @_ % 2 ? shift : undef, my $self = $class->SUPER::new(@_);
+  $self->from_file($file) if $file;
+  return _defaults($self);
 }
 
 sub _defaults {
@@ -154,6 +175,53 @@ sub _process_batch_get_response {
   }
 
   return $err || '', $as_list ? Mojo::Collection->new(@$reports) : $reports->[0];
+}
+
+sub _query_translator {
+  my ($self, %query) = @_;
+
+  for my $filter (@{delete($query{filters}) || []}) {
+    my ($not, $op) = $filter->[1] =~ /^(\!)?(.*)$/;
+    my $group_op = $QUERY_TRANSLATOR{$op} || [dimension => $op];
+
+    if ($group_op->[0] eq 'metric') {
+      push @{$query{metricFilterClauses}[0]{filters}},
+        {
+        metricName      => $filter->[0],
+        not             => $not ? true : false,
+        operator        => $group_op->[1],
+        comparisonValue => "$filter->[2]",
+        };
+    }
+    else {
+      push @{$query{dimensionFilterClauses}[0]{filters}},
+        {
+        dimensionName => $filter->[0],
+        not           => $not ? true : false,
+        operator      => $group_op->[1],
+        expressions   => $filter->[2],
+        };
+    }
+  }
+
+  for my $order_by (@{delete($query{order_by}) || []}) {
+    my ($field, $order) = $order_by =~ /^(\S+)\s*(asc|desc)?$/;
+    $order = $QUERY_SORT_ORDER{$order || 'x'} || $QUERY_SORT_ORDER{x};
+    push @{$query{orderBys}}, {fieldName => $1, sortOrder => $order};
+  }
+
+  if (my $d = delete $query{interval}) {
+    $query{dateRanges} = [{startDate => $d->[0], endDate => $d->[1] || '1daysAgo'}];
+  }
+
+  $query{dimensions} = [map { +{name => $_} } split /,/, $query{dimensions}]
+    if $query{dimensions} and not ref $query{dimensions};
+  $query{metrics} = [map { +{expression => $_} } split /,/, $query{metrics}]
+    if $query{metrics} and not ref $query{metrics};
+  $query{pageSize} = delete $query{rows} if exists $query{rows};
+  $query{viewId} ||= $self->view_id;
+
+  return \%query;
 }
 
 1;
@@ -226,6 +294,13 @@ Holds the content of a pem file that looks like this:
 
 Holds a L<Mojo::UserAgent> object.
 
+=head2 view_id
+
+  $str = $self->view_id;
+  $self = $self->view_id("ga:152749100");
+
+Default C<viewId>, used by L</get_report>.
+
 =head1 METHODS
 
 =head2 authorize
@@ -267,6 +342,90 @@ L<https://console.developers.google.com/apis/credentials>. Example file:
 
 Note: The JSON credentials file will probably contain more fields than is
 listed above.
+
+=head2 get_report
+
+  $report = $self->get_report($query);
+  $self = $self->get_report($query, sub { my ($self, $err, $report) = @_ });
+
+This method is the same as L</batch_get>, but will do some translations on the
+input queries before passing it on to L</batch_get>. Example:
+
+  $self->get_report({
+    dimensions => "ga:productName",
+    metrics    => "ga:productListClicks,ga:productListViews",
+    interval   => [qw(7daysAgo 1daysAgo)],
+    order_by   => ["ga:productListClicks desc"],
+    filters    => [ ["ga:currencyCode" => "eq" => ["USD"]] ],
+  });
+
+=over 2
+
+=item * dimensions
+
+C<dimensions> will be translated from a comma separated string, or passed on
+directly to Google Analytics if not. The example above results in this query:
+
+  dimensions => [{name => "ga:productName"}]
+
+=item * filters
+
+C<filters> is a simpler version of C<dimensionFilterClauses> and
+C<metricFilterClauses>. The format is:
+
+  filters => [ [$fieldName, $operator, $value] ]
+
+The C<$operator> will be used to determine if the expression should go into
+C<dimensionFilterClauses> or C<metricFilterClauses>.
+
+  Input operator | Filter group          | Analytics operator
+  ---------------|-----------------------|----------------------
+  eq             | dimensionFilterClause | EXACT
+  ^              | dimensionFilterClause | BEGINS_WITH
+  $              | dimensionFilterClause | ENDS_WITH
+  =~             | dimensionFilterClause | REGEXP
+  substr         | dimensionFilterClause | PARTIAL
+  ==             | metricFilterClause    | EQUAL
+  >              | metricFilterClause    | GREATER_THAN
+  <              | metricFilterClause    | LESS_THAN
+
+The filter will be "NOT" if the operator is prefixed with "!".
+
+=item * interval
+
+C<interval> can be used as a simpler version of C<dateRanges>. The example above
+results in:
+
+  dateRanges => [{startDate => "7daysAgo", endDate => "1daysAgo"}]
+
+Note that C<endDate> will default to "1daysAgo" if not present.
+
+=item * metrics
+
+C<metrics> will be translated from a comma separated string, or passed on
+directly to Google Analytics if not. The example above results in this query:
+
+  metrics => [{name => "ga:productListClicks"}, {name => "ga:productListViews"}]
+
+=item * order_by
+
+C<order_by> can be used as a simpler version to C<orderBys>. The example above
+results in:
+
+  orderBys => [{fieldName => "ga:productListClicks", sortOrder => "DESCENDING'}]
+
+The sort order can be "asc" or "desc". Will result in "SORT_ORDER_UNSPECIFIED"
+unless present.
+
+=item * rows
+
+Alias for C<pageSize>.
+
+=item * viewId
+
+C<viewId> will be set from L</view_id> if not present in the query.
+
+=back
 
 =head2 new
 
