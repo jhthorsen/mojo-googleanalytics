@@ -5,6 +5,7 @@ use Mojo::Collection;
 use Mojo::File 'path';
 use Mojo::GoogleAnalytics::Report;
 use Mojo::JSON qw(decode_json false true);
+use Mojo::Promise;
 use Mojo::JWT;
 use Mojo::UserAgent;
 
@@ -34,38 +35,10 @@ has view_id => '';
 
 sub authorize {
   my ($self, $cb) = @_;
-  my $prev = $self->authorization;
-  my $time = time;
-  my ($jwt, @ua_args);
-
-  warn "[RG::Google] Authorization exp: @{[$prev->{exp} ? $prev->{exp} : -1]} < $time\n" if DEBUG;
-
-  if ($prev->{exp} and $time < $prev->{exp}) {
-    $self->$cb('') if $cb;
-    return $self;
-  }
-
-  $ua_args[0] = Mojo::URL->new($self->{token_uri});
-  $jwt = Mojo::JWT->new->algorithm('RS256')->secret($self->private_key);
-
-  $jwt->claims(
-    {
-      aud   => $ua_args[0]->to_string,
-      exp   => $time + 3600,
-      iat   => $time,
-      iss   => $self->client_email,
-      scope => $self->{auth_scope},
-    }
-  );
-
-  push @ua_args, (form => {grant_type => 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion => $jwt->encode});
-  warn "[RG::Google] Authenticating with $ua_args[0] ...\n", if DEBUG;
+  my @ua_args = $self->_authorize_ua_args or return $self;
 
   if ($cb) {
-    Mojo::IOLoop->delay(
-      sub { $self->ua->post(@ua_args, shift->begin) },
-      sub { $self->$cb($self->_process_authorize_response(pop)) },
-    );
+    $self->ua->post(@ua_args, sub { $self->$cb($self->_process_authorize_response($_[1])) });
   }
   else {
     my ($err, $res) = $self->_process_authorize_response($self->ua->post(@ua_args));
@@ -73,6 +46,13 @@ sub authorize {
   }
 
   return $self;
+}
+
+sub authorize_p {
+  my $self = shift;
+
+  return Mojo::Promise->new->resolve unless my @ua_args = $self->_authorize_ua_args;
+  return $self->ua->post_p(@ua_args)->then(sub { $self->_process_authorize_response($_[0]) });
 }
 
 sub batch_get {
@@ -83,18 +63,18 @@ sub batch_get {
     json => {reportRequests => ref $query eq 'ARRAY' ? $query : [$query]});
 
   if ($cb) {
-    Mojo::IOLoop->delay(
-      sub { $self->authorize(shift->begin) },
-      sub {
-        my ($delay, $err) = @_;
-        return $self->$cb($err, {}) if $err;
-        warn "[RG::Google] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
-        $ua_args[1] = {Authorization => $self->authorization->{header}};
-        $self->ua->post(@ua_args, $delay->begin);
-      },
-      sub { $self->$cb($self->_process_batch_get_response($query, pop)) }
-    );
-    return $self;
+    my $p = $self->authorize_p->then(sub {
+      warn "[RG::Google] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
+      $ua_args[1] = {Authorization => $self->authorization->{header}};
+      return $self->ua->post_p(@ua_args);
+    })->then(sub {
+      my $res = $self->_process_batch_get_response($query, shift);
+      return ref $cb ? $self->$cb('', $res) : $res;
+    })->catch(sub {
+      return ref $cb ? $self->$cb(shift, {}) : shift;
+    });
+
+    return ref $cb ? $self : $p;
   }
   else {
     $ua_args[1] = {Authorization => $self->authorize->authorization->{header}};
@@ -103,6 +83,10 @@ sub batch_get {
     die $err if $err;
     return $res;
   }
+}
+
+sub batch_get_p {
+  shift->batch_get(shift, 1);
 }
 
 sub from_file {
@@ -122,11 +106,42 @@ sub get_report {
   return $self->batch_get($self->_query_translator(%$query), $cb);
 }
 
+sub get_report_p {
+  my ($self, $query) = @_;
+  $self->batch_get_p($self->_query_translator(%$query));
+}
+
 sub new {
   my $class = shift;
   my $file = @_ % 2 ? shift : undef, my $self = $class->SUPER::new(@_);
   $self->from_file($file) if $file;
-  return _defaults($self);
+  return $self->_defaults;
+}
+
+sub _authorize_ua_args {
+  my $self = shift;
+  my $time = time;
+  my $prev = $self->authorization;
+  my ($jwt, @ua_args);
+
+  warn "[RG::Google] Authorization exp: @{[$prev->{exp} ? $prev->{exp} : -1]} < $time\n" if DEBUG;
+  return if $prev->{exp} and $time < $prev->{exp};
+
+  $ua_args[0] = Mojo::URL->new($self->{token_uri});
+  $jwt = Mojo::JWT->new->algorithm('RS256')->secret($self->private_key);
+
+  $jwt->claims({
+    aud   => $ua_args[0]->to_string,
+    exp   => $time + 3600,
+    iat   => $time,
+    iss   => $self->client_email,
+    scope => $self->{auth_scope},
+  });
+
+  push @ua_args, (form => {grant_type => 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion => $jwt->encode});
+  warn "[RG::Google] Authenticating with $ua_args[0] ...\n", if DEBUG;
+
+  return @ua_args;
 }
 
 sub _defaults {
@@ -311,16 +326,28 @@ Default C<viewId>, used by L</get_report>.
 This method will set L</authorization>. Note that this method is automatically
 called from inside of L</batch_get>, unless already authorized.
 
+=head2 authorize_p
+
+  $promise = $self->authorize_p;
+
+Same as L</authorize>, but returns a L<Mojo::Promise>.
+
 =head2 batch_get
 
-  $report = $self->batch_get($query);
-  $self = $self->batch_get($query, sub { my ($self, $err, $report) = @_ });
+  $report = $self->batch_get(\%query);
+  $self = $self->batch_get(\%query, sub { my ($self, $err, $report) = @_ });
 
 Used to extract data from Google Analytics. C<$report> will be a
 L<Mojo::Collection> if C<$query> is an array ref, and a single
 L<Mojo::GoogleAnalytics::Report> object if C<$query> is a hash.
 
 C<$err> is a string on error and false value on success.
+
+=head2 batch_get_p
+
+  $promise = $self->batch_get_p(\%query);
+
+Same as L</batch_get>, but returns a L<Mojo::Promise>.
 
 =head2 from_file
 
@@ -345,8 +372,8 @@ listed above.
 
 =head2 get_report
 
-  $report = $self->get_report($query);
-  $self = $self->get_report($query, sub { my ($self, $err, $report) = @_ });
+  $report = $self->get_report(\%query);
+  $self = $self->get_report(\%query, sub { my ($self, $err, $report) = @_ });
 
 This method is the same as L</batch_get>, but will do some translations on the
 input queries before passing it on to L</batch_get>. Example:
@@ -426,6 +453,12 @@ Alias for C<pageSize>.
 C<viewId> will be set from L</view_id> if not present in the query.
 
 =back
+
+=head2 get_report_p
+
+  $promise = $selfg->get_report_p(\%query);
+
+Same as L</get_report>, but returns a L<Mojo::Promise>.
 
 =head2 new
 
