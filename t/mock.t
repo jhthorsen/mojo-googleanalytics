@@ -29,14 +29,16 @@ is $report->count,      3,            'batch_get: count';
 is $report->page_token, 'some-token', 'batch_get: page_token';
 ok !$report->error, 'batch_get: error';
 
-my $err = 'not called';
-$ga->authorize_p->then(sub { $err = shift })->wait;
-ok !$err, 'authorize_p: no error';
-
 $report = undef;
 $ga->batch_get_p($query)->then(sub { $report = shift })->wait;
 is $report->count, 3, 'batch_get_p: count';
 ok !$report->error, 'batch_get_p: error' or diag explain $report->error;
+
+my $err = 'not called';
+$ga->{token_uri} = '/no/such/route';
+$ga->authorization({});
+$ga->authorize_p->catch(sub { $err = shift })->wait;
+like $err, qr{Not Found}, 'authorize_p: failed';
 
 done_testing;
 

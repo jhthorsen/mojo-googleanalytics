@@ -52,7 +52,10 @@ sub authorize_p {
   my $self = shift;
 
   return Mojo::Promise->new->resolve unless my @ua_args = $self->_authorize_ua_args;
-  return $self->ua->post_p(@ua_args)->then(sub { $self->_process_authorize_response($_[0]) });
+  return $self->ua->post_p(@ua_args)->then(sub {
+    my $err = $self->_process_authorize_response($_[0]);
+    return $err ? Mojo::Promise->new->reject($err) : ();
+  });
 }
 
 sub batch_get {

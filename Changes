@@ -1,5 +1,8 @@
 Revision history for perl distribution Mojo-GoogleAnalytics
 
+0.04 Not Released
+ - Fix handling error in authorize_p()
+
 0.03 2018-07-19T15:01:40+0800
  - Add support for promises
  - Add support for mocked interface
