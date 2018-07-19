@@ -11,7 +11,7 @@ use Mojo::UserAgent;
 
 use constant DEBUG => $ENV{MOJO_GA_DEBUG} || 0;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 our %QUERY_SORT_ORDER = (asc => 'ASCENDING', desc => 'DESCENDING', x => 'SORT_ORDER_UNSPECIFIED');
 
