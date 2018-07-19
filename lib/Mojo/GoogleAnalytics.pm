@@ -113,9 +113,35 @@ sub get_report_p {
 
 sub new {
   my $class = shift;
-  my $file = @_ % 2 ? shift : undef, my $self = $class->SUPER::new(@_);
+  my $file  = @_ % 2 ? shift : undef;
+  my $self  = $class->SUPER::new(@_);
+
   $self->from_file($file) if $file;
-  return $self->_defaults;
+  $self->{token_uri}     ||= 'https://accounts.google.com/o/oauth2/token';
+  $self->{auth_scope}    ||= 'https://www.googleapis.com/auth/analytics.readonly';
+  $self->{batch_get_uri} ||= 'https://analyticsreporting.googleapis.com/v4/reports:batchGet';
+  $self->mock if $ENV{TEST_MOJO_GA_BATCH_GET_DIR};
+
+  return $self;
+}
+
+sub mock {
+  my ($self, $args) = @_;
+  $self->{batch_get_dir} = $args->{batch_get_dir} // $ENV{TEST_MOJO_GA_BATCH_GET_DIR} // File::Spec->tmpdir;
+
+  require Mojolicious;
+  my $server = $self->ua->server;
+  $server->app(Mojolicious->new) unless $server->app;
+
+  my $mock_r = $server->app->routes;
+  Scalar::Util::weaken($self);
+  for my $name (qw(batch_get_uri token_uri)) {
+    my $cb = $self->can("_mocked_action_$name");
+    $self->{$name} = sprintf '/mocked/ga%s', Mojo::URL->new($self->{$name})->path;
+    $mock_r->any($self->{$name} => $args->{$name} || sub { $self->$cb(@_) })->name($name) unless $mock_r->lookup($name);
+  }
+
+  return $self;
 }
 
 sub _authorize_ua_args {
@@ -144,11 +170,18 @@ sub _authorize_ua_args {
   return @ua_args;
 }
 
-sub _defaults {
-  $_[0]->{token_uri}     ||= 'https://accounts.google.com/o/oauth2/token';
-  $_[0]->{auth_scope}    ||= 'https://www.googleapis.com/auth/analytics.readonly';
-  $_[0]->{batch_get_uri} ||= 'https://analyticsreporting.googleapis.com/v4/reports:batchGet';
-  $_[0];
+sub _mocked_action_batch_get_uri {
+  my ($self, $c) = @_;
+  my $file = Mojo::File::path($self->{batch_get_dir}, sprintf '%s.json', Mojo::Util::md5_sum($c->req->text));
+
+  warn "[GoogleAnalytics] Reading dummy response file $file (@{[-r $file ? 1 : 0]})\n" if DEBUG;
+  return $c->render(data => $file->slurp) if -r $file;
+  return $c->render(json => {error => {message => qq(Could not read dummy response file "$file".)}}, status => 500);
+}
+
+sub _mocked_action_token_uri {
+  my ($self, $c) = @_;
+  $c->render(json => {access_token => 'some-dummy-token', expires_in => 3600, token_type => 'Bearer'});
 }
 
 sub _process_authorize_response {
@@ -251,7 +284,7 @@ Mojo::GoogleAnalytics - Extract data from Google Analytics using Mojo UserAgent
 
   my $ga     = Mojo::GoogleAnalytics->new("/path/to/credentials.json");
   my $report = $ga->batch_get({
-    viewId     => "ga:152749100",
+    viewId     => "ga:123456789",
     dateRanges => [{startDate => "7daysAgo", endDate => "1daysAgo"}],
     dimensions => [{name => "ga:country"}, {name => "ga:browser"}],
     metrics    => [{expression => "ga:pageviews"}, {expression => "ga:sessions"}],
@@ -312,7 +345,7 @@ Holds a L<Mojo::UserAgent> object.
 =head2 view_id
 
   $str = $self->view_id;
-  $self = $self->view_id("ga:152749100");
+  $self = $self->view_id("ga:123456789");
 
 Default C<viewId>, used by L</get_report>.
 
@@ -468,6 +501,41 @@ Same as L</get_report>, but returns a L<Mojo::Promise>.
 
 Used to construct a new L<Mojo::GoogleAnalytics> object. Calling C<new()> with
 a single argument will cause L</from_file> to be called with that argument.
+
+=head2 mock
+
+  $self = $self->mock;
+  $self = $self->mock({batch_get_dir => "/path/to/some/dir"});
+  $self = $self->mock({batch_get_uri => sub { my ($self, $c) = @_; }, token_uri => sub { my ($self, $c) = @_; }});
+
+This method is useful when you want to test your application, but you don't
+want to ask Google for reports. C<mock()> will be automatically called by
+L</new> if the C<TEST_MOJO_GA_BATCH_GET_DIR> environment variable i set. The
+arguments passed on to this method can be:
+
+=over 2
+
+=item * batch_get_dir
+
+Need to be an absolute path to a directory with the dummy response files for
+L</batch_get>.
+
+Defaults to C<TEST_MOJO_GA_BATCH_GET_DIR> environment variable.
+
+=item * batch_get_uri
+
+A code ref that is used as an L<Mojolicious> action. The default code ref
+provided by this module will look for a response file in C<batch_get_dir> with
+the name C<$md5_sum.json>, where the MD5 sum is calculated from the JSON
+request body. It will respond with an error message with the full path of the
+expected file, unless the file could be read.
+
+=item * token_uri
+
+A code ref that is used as an L<Mojolicious> action. The default code ref will
+respond with a dummy bearer token and log you in.
+
+=back
 
 =head1 AUTHOR
 

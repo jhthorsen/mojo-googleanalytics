@@ -2,6 +2,7 @@ Revision history for perl distribution Mojo-GoogleAnalytics
 
 0.03 Not Released
  - Add support for promises
+ - Add support for mocked interface
 
 0.02 2017-07-26T13:24:12+0200
  - Fix $err is not a hash ref
