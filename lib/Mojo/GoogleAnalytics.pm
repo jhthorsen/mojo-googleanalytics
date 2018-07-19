@@ -64,7 +64,7 @@ sub batch_get {
 
   if ($cb) {
     my $p = $self->authorize_p->then(sub {
-      warn "[RG::Google] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
+      warn "[GoogleAnalytics] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
       $ua_args[1] = {Authorization => $self->authorization->{header}};
       return $self->ua->post_p(@ua_args);
     })->then(sub {
@@ -78,7 +78,7 @@ sub batch_get {
   }
   else {
     $ua_args[1] = {Authorization => $self->authorize->authorization->{header}};
-    warn "[RG::Google] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
+    warn "[GoogleAnalytics] Getting analytics data from $ua_args[0] ...\n", if DEBUG;
     my ($err, $res) = $self->_process_batch_get_response($query, $self->ua->post(@ua_args));
     die $err if $err;
     return $res;
@@ -124,7 +124,7 @@ sub _authorize_ua_args {
   my $prev = $self->authorization;
   my ($jwt, @ua_args);
 
-  warn "[RG::Google] Authorization exp: @{[$prev->{exp} ? $prev->{exp} : -1]} < $time\n" if DEBUG;
+  warn "[GoogleAnalytics] Authorization exp: @{[$prev->{exp} ? $prev->{exp} : -1]} < $time\n" if DEBUG;
   return if $prev->{exp} and $time < $prev->{exp};
 
   $ua_args[0] = Mojo::URL->new($self->{token_uri});
@@ -139,7 +139,7 @@ sub _authorize_ua_args {
   });
 
   push @ua_args, (form => {grant_type => 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion => $jwt->encode});
-  warn "[RG::Google] Authenticating with $ua_args[0] ...\n", if DEBUG;
+  warn "[GoogleAnalytics] Authenticating with $ua_args[0] ...\n", if DEBUG;
 
   return @ua_args;
 }
@@ -160,10 +160,10 @@ sub _process_authorize_response {
   if ($err) {
     $err = sprintf '%s >>> %s (%s)', $url, $res->{error_description} || $err->{message} || 'Unknown error',
       $err->{code} || 0;
-    warn "[RG::Google] $err\n", if DEBUG;
+    warn "[GoogleAnalytics] $err\n", if DEBUG;
   }
   else {
-    warn "[RG::Google] Authenticated with $url\n", if DEBUG;
+    warn "[GoogleAnalytics] Authenticated with $url\n", if DEBUG;
     $self->authorization(
       {exp => time + ($res->{expires_in} - 600), header => "$res->{token_type} $res->{access_token}"});
   }
